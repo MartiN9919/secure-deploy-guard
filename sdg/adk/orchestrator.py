@@ -41,7 +41,9 @@ class OrchestratorAgent:
             instructions="You are a security orchestration agent. Route requests to security scanning sub-agents."
         )
 
-    def run(self, target: ScanTarget, role: str = "developer", environment: str = "local") -> dict:
+    def run(self, target: ScanTarget, role: str = "developer", environment: str = "local", run_red_team: bool = False, run_green_team: bool = False) -> dict:
+        from sdg.red_blue_green.red_team import RedTeam
+        from sdg.red_blue_green.green_team import GreenTeam
         from sdg.orchestrator.session import Session
         session = Session(target, self.config)
 
@@ -86,6 +88,26 @@ class OrchestratorAgent:
             if not session.approved:
                 return {"error": "Human approval denied", "session_id": session.session_id}
 
+        # Red Team adversarial scan (optional full pipeline)
+        red_team_findings: list[dict] = []
+        if run_red_team:
+            try:
+                rt = RedTeam(self.config)
+                rt_result = rt.run(target.path)
+                red_team_findings = rt_result.get("findings", [])
+            except Exception:
+                red_team_findings = []
+
+        # Green Team auto-fix suggestions (optional full pipeline)
+        green_team_fixes: list[dict] = []
+        if run_green_team:
+            try:
+                gt = GreenTeam(self.config)
+                fixable = [f for f in session.get_all_findings() if f.severity.value in ("critical", "high")]
+                green_team_fixes = gt.auto_fix(fixable)
+            except Exception:
+                green_team_fixes = []
+
         # LLM Judge evaluation
         eval_result = self.judge.evaluate(target, session)
 
@@ -93,7 +115,7 @@ class OrchestratorAgent:
         report_data = self.reporter.generate(session)
         report_markdown = self.reporter.to_markdown(session)
 
-        return {
+        result = {
             "session_id": session.session_id,
             "trust_score": session.trust_score,
             "summary": session.summary(),
@@ -101,4 +123,7 @@ class OrchestratorAgent:
             "report": report_data,
             "report_markdown": report_markdown,
             "passed": session.trust_score >= 0.5 and not critical_findings,
+            "red_team_findings": red_team_findings,
+            "green_team_fixes": green_team_fixes,
         }
+        return result

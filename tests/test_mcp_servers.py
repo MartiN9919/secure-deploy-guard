@@ -1,3 +1,4 @@
+import sys
 from sdg.mcp_servers.server_bandit import server as bandit_server
 from sdg.mcp_servers.server_semgrep import server as semgrep_server
 from sdg.mcp_servers.server_docker import server as docker_server
@@ -22,8 +23,13 @@ class TestMCPServers:
 class TestMCPClient:
     def test_client_creation(self):
         client = MCPClient("sdg/mcp_servers/server_secrets.py")
-        assert client.server_params.command == "python"
         assert "server_secrets.py" in str(client.server_params.args[0])
+        assert client.server_params.command in ("python", "python3", sys.executable)
+
+    def test_client_uses_sys_executable(self):
+        import sys
+        client = MCPClient("sdg/mcp_servers/server_secrets.py")
+        assert client.server_params.command == sys.executable
 
 
 class TestSemgrepServer:

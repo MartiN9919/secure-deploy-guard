@@ -1,467 +1,603 @@
 # Secure Deploy Guard (SDG)
 
-**Secure Deploy Guard** — это пре-деплойный сканер безопасности на базе AI-агентов.  
-Он автоматически проверяет код на уязвимости перед выкаткой в продакшн, используя многоагентную оркестрацию, MCP-серверы, политики безопасности, песочницу, Human-in-the-Loop и команды Red/Blue/Green.
+**Secure Deploy Guard (SDG)** is an AI-agent-powered, pre-deployment security scanner built around the Model Context Protocol (MCP).
+
+SDG automatically inspects source code, dependencies, and infrastructure configurations for security vulnerabilities before they reach production. An orchestrator dispatches specialized agents; each agent invokes dedicated MCP servers. Findings flow through a policy engine, Human-in-the-Loop (HITL) approval, and an LLM judge. The result is a deterministic deploy/no-deploy signal with actionable reports.
 
 ---
 
-## 1. Для чего этот проект?
+## Table of Contents
 
-В эпоху vibe coding и AI-генерации кода скорость разработки выросла на порядок, но вместе с ней выросла и скорость появления уязвимостей. SDG решает проблему **пропущенных уязвимостей** в CI/CD пайплайне, проверяя код до момента деплоя.
+1. [Project Purpose](#1-project-purpose)
+2. [What SDG Scans](#2-what-sdg-scans)
+3. [Technology Stack](#3-technology-stack)
+4. [Architecture](#4-architecture)
+5. [How the AI Agents Work](#5-how-the-ai-agents-work)
+6. [MCP Servers](#6-mcp-servers)
+7. [Policy Engine](#7-policy-engine)
+8. [Trust Score, Judge, and Reports](#8-trust-score-judge-and-reports)
+9. [Installation and Configuration](#9-installation-and-configuration)
+10. [Usage](#10-usage)
+11. [Docker Deployment](#11-docker-deployment)
+12. [PyCharm Setup](#12-pycharm-setup)
+13. [Project Structure](#13-project-structure)
+14. [Configuration Reference](#14-configuration-reference)
+15. [Troubleshooting](#15-troubleshooting)
+16. [License](#16-license)
 
-### Ключевые задачи, которые решает SDG
+---
 
-| Задача | Как решает SDG |
+## 1. Project Purpose
+
+Modern development—especially vibe coding and AI-assisted code generation—produces code very quickly. SDG exists to make sure that speed does not come at the cost of security. It acts as an automated gatekeeper that evaluates a project before deployment and returns a clear verdict.
+
+### Key Goals
+
+- Detect common vulnerabilities in source code before they are deployed.
+- Identify vulnerable dependencies through CVE intelligence.
+- Flag insecure Docker, docker-compose, and Kubernetes configurations.
+- Block or require approval for high-risk actions based on role and environment.
+- Provide LLM-based semantic analysis of critical findings.
+- Offer adversarial scanning (Red Team), anomaly detection (Blue Team), and suggested fixes (Green Team).
+- Generate human-readable Markdown, JSON, and web dashboard reports.
+
+### Target Audience
+
+- Developers checking code before a commit or pull request.
+- DevOps engineers integrating security gates into CI/CD.
+- Security engineers who need a lightweight pre-deployment scanner.
+- Teams practicing agentic engineering and vibe coding who need guardrails.
+
+---
+
+## 2. What SDG Scans
+
+| Scan Type | Files / Inputs | Examples of Detected Issues |
+|---|---|---|
+| **SAST** | `.py`, `.js`, `.c`, `.cpp`, `.cs`, `.java`, `.go`, `.rb` | SQL injection, XSS, command injection, hardcoded secrets, path traversal, SSRF, insecure deserialization, buffer overflow |
+| **SCA** | `requirements.txt` | Known CVEs in pinned dependencies; enriched with NVD, MITRE, and OSV data |
+| **Config** | `Dockerfile*`, `docker-compose*.yml`, `*.yaml`/`*.yml` (K8s) | Missing `USER`, missing `HEALTHCHECK`, `:latest` tag, secrets in `ENV`, privileged containers, missing resource limits, `runAsNonRoot` missing |
+| **Red Team** | `.py`, `.js`, `.html`, `.md`, `.txt`, `.yaml`, `.yml` | Instruction injection, hidden commands, zero-width characters |
+| **Blue Team** | Session-level metrics | Anomaly spikes, unexpected agent counts, unusual critical finding ratios |
+| **Green Team** | Critical / high findings | Auto-fix suggestions for SQLi, command injection, hardcoded secrets |
+
+---
+
+## 3. Technology Stack
+
+| Component | Implementation |
 |---|---|
-| **SAST** (статический анализ) | Сканирует исходный код на SQL-инъекции, XSS, command injection, hardcoded secrets, buffer overflow, path traversal, SSRF, insecure deserialization |
-| **SCA** (анализ зависимостей) | Проверяет `requirements.txt` на известные CVE-уязвимости с обогащением через CVE Intelligence Gathering (NVD, MITRE, OSV) |
-| **Конфигурационный анализ** | Проверяет Dockerfile, docker-compose, Kubernetes-манифесты на ошибки безопасности |
-| **Политики безопасности** | Structural Gate (роли/окружения) + Semantic Gate (LLM-проверка PII/политик) |
-| **Adversarial-скан** | Red Team ищет instruction injection, скрытые команды, zero-width символы |
-| **Human-in-the-Loop** | HITL-гейт запрашивает одобрение человека при низком Trust Score или критических находках |
-| **Trust Score** | 1.0 → 0.0 в зависимости от severity найденных уязвимостей |
-| **LLM-Judge** | Оценка качества сканирования через OpenRouter/Gemini |
-| **Green Team** | Авто-генерация исправлений для типовых уязвимостей |
-| **Отчётность** | JSON + Markdown + CLI table + веб-дашборд |
-
-### Целевая аудитория
-- Разработчики, которые хотят проверить код перед коммитом/PR
-- DevOps-инженеры, которые встраивают сканирование в CI/CD
-- Security-инженеры, которым нужен лёгкий пре-деплойный сканер
-- Команды, практикующие vibe coding / agentic engineering, которым нужна дисциплина и guardrails
+| **Agent framework** | Custom ADK-style (`OrchestratorAgent`, `LlmAgent`, `BaseAgent`) |
+| **LLM provider** | OpenRouter (Gemini 2.5 Flash Lite) |
+| **SAST engines** | Bandit + built-in regex patterns |
+| **SCA engine** | `requirements.txt` parser + CVE Intelligence Gathering |
+| **Config scanner** | MCP Docker Scanner |
+| **MCP transport** | MCP Python SDK 1.28+ over stdio |
+| **Policy engine** | YAML configuration + Python (`StructuralGate`, `SemanticGate`) |
+| **HITL** | CLI approval gate with UTF-8 / Cyrillic support |
+| **Reports** | JSON, Markdown, CLI table, web dashboard |
+| **Web UI** | FastAPI 0.138 + Starlette 1.3 + Jinja2 + Uvicorn 0.49 |
+| **HTTP client** | httpx |
+| **Testing** | pytest 9.1 |
+| **Python version** | 3.14+ |
 
 ---
 
-## 2. Архитектура
+## 4. Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                       Developer / CI/CD                      │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    OrchestratorAgent                         │
-│              (ADK Custom Agent pattern)                      │
-└──────────────┬───────────────────────────────┬──────────────┘
-               │                               │
-       ┌───────▼───────┐              ┌────────▼──────┐
-       │ Policy Server  │              │  Sub-Agents   │
-       │ Structural +   │              │  SAST / SCA   │
-       │ Semantic gates │              │  Config       │
-       └───────┬───────┘              └───────┬───────┘
-               │                              │
-               ▼                              ▼
-       ┌───────────────┐              ┌───────────────┐
-       │  HITL Gate    │              │  Findings     │
-       │  Approval     │              │  Collection   │
-       └───────┬───────┘              └───────┬───────┘
-               │                              │
-               └──────────────┬───────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│  User / CI / Web UI / Python API / External MCP client              │
+└─────────────────────────────┬───────────────────────────────────────┘
+                              │
                               ▼
-              ┌───────────────────────────────┐
-              │  Evaluation Engine            │
-              │  Trust Score + LLM Judge      │
-              └───────────────┬───────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│  OrchestratorAgent                                                  │
+│  Central controller: runs agents, applies policies, HITL, judge,    │
+│  and report generation                                              │
+└──────┬────────┬────────┬────────┬────────┬────────┬─────────────────┘
+       │        │        │        │        │        │
+       ▼        ▼        ▼        ▼        ▼        ▼
+   ┌──────┐ ┌──────┐ ┌──────┐ ┌───────┐ ┌───────┐ ┌─────────┐
+   │ SAST │ │ SCA  │ │Config│ │Structural│ │Semantic│ │ Blue   │
+   │Agent │ │Agent │ │Agent │ │ Gate   │ │ Gate   │ │ Team   │
+   └──┬───┘ └──┬───┘ └──┬───┘ └────┬────┘ └────┬────┘ └───┬────┘
+      │        │        │          │           │          │
+      ▼        ▼        ▼          │           │          ▼
+  Bandit    CVE      Docker       roles +      LLM      anomaly
+  MCP       API      MCP          env rules   check     detection
+  Semgrep
+  MCP
+      │        │        │          │           │
+      └────────┴────────┴──────────┴───────────┘
+                              │
                               ▼
-              ┌───────────────────────────────┐
-              │  Report Generator             │
-              │  Markdown / JSON / Dashboard  │
-              └───────────────────────────────┘
+                    ┌─────────────────────┐
+                    │  HITL Approval      │
+                    │  (human approval)   │
+                    └──────────┬──────────┘
+                               ▼
+                    ┌─────────────────────┐
+                    │  LLM Judge          │
+                    │  (OpenRouter/Gemini)│
+                    └──────────┬──────────┘
+                               ▼
+                    ┌─────────────────────┐
+                    │  Report Generator   │
+                    │  Markdown / JSON    │
+                    └─────────────────────┘
 ```
 
-### Поток выполнения сканирования
+### Execution Flow
 
-1. **OrchestratorAgent** получает `ScanTarget` (путь к проекту), роль и окружение
-2. **StructuralGate** проверяет: разрешено ли действие `scan` для данной роли и окружения?
-   - Если действие требует одобрения — выбрасывает `ApprovalRequiredError`, и запрос идёт на HITL
-   - Если действие запрещено — скан немедленно блокируется
-3. **SASTAgent** обходит все `.py`, `.js`, `.c`, `.cpp`, `.java`, `.go`, `.rb` файлы (исключая `.venv`, `node_modules`, `.git` и др.) и применяет 11 regex-паттернов
-4. **SCAAgent** читает `requirements.txt`, парсит версии пакетов, сверяет с базой известных уязвимостей и обогащает CVE-информацией через `CVEIntelligenceGatherer`
-5. **ConfigAgent** проверяет Dockerfile, docker-compose, Kubernetes manifests
-6. **SemanticGate** отправляет critical findings в LLM для семантической проверки (PII, API keys, деструктивные операции). Если LLM не сконфигурирован — пропускается
-7. **TrustScoreCalculator** вычисляет оценку: `1.0 - (critical*0.3 + high*0.15 + medium*0.05 + low*0.01)`, clamped [0,1]
-8. **BlueTeam** проверяет на аномалии (слишком много агентов, спайк critical)
-9. **ApprovalGate** — если требуется approval, score < 0.7 или есть critical, запрашивает одобрение человека
-10. **LLMJudge** оценивает качество скана (1-5), используя JSON mode при наличии API ключа
-11. **ReportGenerator** собирает отчёт (Markdown + JSON)
+1. `OrchestratorAgent.run(target, role, environment)` receives a target path, role, and environment.
+2. `StructuralGate` evaluates whether the scan action is allowed for the role/environment combination. If approval is required, it routes to HITL. If forbidden, it blocks immediately.
+3. `SASTAgent` asynchronously calls the MCP Bandit server and the MCP Semgrep server.
+4. `SCAAgent` parses `requirements.txt`, compares versions against a known-vulnerability database, and enriches findings via `CVEIntelligenceGatherer`.
+5. `ConfigAgent` calls the MCP Docker Scanner for Dockerfile and docker-compose checks.
+6. `SemanticGate` sends critical findings to the LLM for semantic policy evaluation.
+7. `TrustScoreCalculator` computes a score from the collected findings.
+8. `BlueTeam` checks the session for anomalies.
+9. `ApprovalGate` requests human approval if the trust score is low, critical findings exist, or the policy requires it.
+10. `LLMJudge` evaluates scan quality on a 1-5 scale.
+11. `ReportGenerator` produces Markdown and JSON reports.
 
 ---
 
-## 3. Компоненты системы
+## 5. How the AI Agents Work
 
-### 3.1. Агенты сканирования (`sdg/agents/`)
+SDG uses a hybrid agent model: deterministic scanning agents perform the bulk of the work, while LLM-based agents handle evaluation and semantic reasoning.
 
-| Агент | Файл | Назначение |
+### 5.1 OrchestratorAgent
+
+**File:** `sdg/adk/orchestrator.py`
+
+The central agent. It owns the scan lifecycle, manages the shared `Session`, dispatches sub-agents, applies gates, handles HITL, invokes the LLM judge, and produces the final report.
+
+### 5.2 SASTAgent
+
+**File:** `sdg/agents/sast_agent.py`
+
+Performs static application security testing by invoking two MCP servers:
+- `MCPClient("sdg/mcp_servers/server_bandit.py")` for Bandit-based Python scanning.
+- `MCPClient("sdg/mcp_servers/server_semgrep.py")` for regex-based pattern scanning.
+
+Both results are parsed into a unified `Finding` model and added to the report.
+
+### 5.3 SCAAgent
+
+**File:** `sdg/agents/sca_agent.py`
+
+Performs software composition analysis:
+- Reads `requirements.txt`.
+- Matches package versions against a built-in vulnerability database.
+- Enriches CVE data via NVD, MITRE, and OSV using `CVEIntelligenceGatherer`.
+
+### 5.4 ConfigAgent
+
+**File:** `sdg/agents/config_agent.py`
+
+Checks infrastructure configurations by calling:
+- `MCPClient("sdg/mcp_servers/server_docker.py")` for Dockerfile and docker-compose scanning.
+
+### 5.5 LlmAgent
+
+**File:** `sdg/adk/llm_agent.py`
+
+A reusable LLM agent wrapper. It builds prompts from instructions, available tools, and user input, then calls the OpenRouter API through `sdg/utils/llm.py`.
+
+### 5.6 LLMJudge
+
+**File:** `sdg/evaluation/judge.py`
+
+Sends a summary of findings to the LLM and asks for a structured evaluation:
+- `score` (1-5)
+- `quality` (e.g., "very poor", "good")
+- `recommendation`
+
+### 5.7 SemanticGate
+
+**File:** `sdg/policy_engine/semantic.py`
+
+Sends descriptions of critical findings to the LLM and asks whether they violate security policies (PII, destructive operations, etc.). Operates fail-closed: if the LLM call fails, the action is blocked.
+
+### 5.8 Red, Blue, and Green Teams
+
+| Team | File | Purpose |
 |---|---|---|
-| **SASTAgent** | `sast_agent.py` | Статический анализ кода по regex-паттернам |
-| **SCAAgent** | `sca_agent.py` | Анализ зависимостей requirements.txt + CVE Intelligence Gathering |
-| **ConfigAgent** | `config_agent.py` | Проверка Docker, docker-compose, Kubernetes конфигов |
+| **Red Team** | `sdg/red_blue_green/red_team.py` | Adversarial pattern scanning (instruction injection, hidden commands, zero-width characters) |
+| **Blue Team** | `sdg/red_blue_green/blue_team.py` | Anomaly and spike detection over the scan session |
+| **Green Team** | `sdg/red_blue_green/green_team.py` | Template-based auto-fix suggestions for common vulnerabilities |
 
-### 3.2. MCP-серверы (`sdg/mcp_servers/`)
+---
 
-MCP (Model Context Protocol) — это "USB-C для AI-инструментов". Каждый MCP-сервер — это независимый процесс, общающийся через stdio по протоколу MCP.
+## 6. MCP Servers
 
-| Сервер | Инструмент | Описание |
+**Directory:** `sdg/mcp_servers/`
+
+MCP servers are standalone processes that expose tools via the Model Context Protocol over stdio. This makes them reusable by any MCP-compatible orchestrator, not just SDG.
+
+| Server | Tool | Description |
 |---|---|---|
-| `bandit-scanner` | `bandit_scan` | Запускает Bandit CLI, парсит JSON-результат |
-| `semgrep-scanner` | `semgrep_scan` | Regex-based SAST через `sdg.utils.patterns` |
-| `docker-scanner` | `scan_dockerfile` | 7 правил для Dockerfile + 3 для compose |
-| `secret-detector` | `scan_secrets` | 12 паттернов для разных типов секретов |
+| `server_bandit.py` | `bandit_scan` | Runs Bandit CLI and returns JSON results |
+| `server_semgrep.py` | `semgrep_scan` | Runs regex-based SAST using `sdg/utils/patterns` |
+| `server_docker.py` | `scan_dockerfile` | Scans Dockerfiles and docker-compose files |
+| `server_secrets.py` | `scan_secrets` | Detects secrets via regex patterns |
+| `client.py` | — | `MCPClient` wrapper for stdio MCP connections |
 
-### 3.3. Движок политик (`sdg/policy_engine/`)
+### MCPClient
 
-| Компонент | Назначение |
+**File:** `sdg/mcp_servers/client.py`
+
+Features:
+- Uses `sys.executable` instead of a hardcoded `python` binary.
+- Adds the project root to `PYTHONPATH` so servers can import `sdg` modules.
+- Adds `.venv/bin` to `PATH` so tools like `bandit` are discoverable.
+
+---
+
+## 7. Policy Engine
+
+**Directory:** `sdg/policy_engine/`
+
+Policies are defined in `sdg/config.yaml`.
+
+### StructuralGate
+
+**File:** `sdg/policy_engine/structural.py`
+
+Fast binary checks based on role and environment:
+- Is the tool allowed for this role?
+- Is the tool blocked in this environment?
+- Does this action require approval?
+
+### SemanticGate
+
+**File:** `sdg/policy_engine/semantic.py`
+
+LLM-based check that evaluates the intent and content of critical findings for PII, destructive operations, or policy violations.
+
+### Supporting Modules
+
+| Module | Purpose |
 |---|---|
-| **StructuralGate** | Быстрые бинарные проверки по ролям и окружениям |
-| **SemanticGate** | LLM-проверка интента и содержимого на PII/политики |
-| **PIIMask** | Маскирование email, API keys, IP, SSN в тексте |
-| **ContextHygiene** | Подстановка `[[VAR]]` placeholder'ов и рекурсивная санитизация аргументов |
-
-### 3.4. CVE Intelligence Gathering (`sdg/cve_intelligence/`)
-
-Реализация готового skill'а [CVE Intelligence Gathering](https://mcpmarket.com/tools/skills/cve-intelligence-gathering) через прямые HTTP API:
-
-| Источник | API | Что предоставляет |
-|---|---|---|
-| **NVD** | `services.nvd.nist.gov` | CVSS score, severity, CWE, affected CPE |
-| **MITRE** | `cveawg.mitre.org` | Официальное описание, ссылки |
-| **OSV** | `api.osv.dev` | GHSA, Go vulndb, PyPI advisories, affected versions |
-
-Использование:
-
-```bash
-python3 -m sdg.cve_intelligence.cli CVE-2023-46695
-```
-
-### 3.5. Red / Blue / Green Teams (`sdg/red_blue_green/`)
-
-| Команда | Файл | Назначение |
-|---|---|---|
-| **Red Team** | `red_team.py` | Поиск adversarial-паттернов (instruction injection, hidden commands, zero-width chars) |
-| **Blue Team** | `blue_team.py` | Аналитика аномалий (количество агентов, находок, critical spike) |
-| **Green Team** | `green_team.py` | Авто-генерация исправлений для SQLi, command injection, hardcoded secrets |
-
-### 3.6. Фронтенд (`sdg/frontend/`)
-
-FastAPI-приложение с Jinja2-шаблонами и локальными Bootstrap 5 ассетами.
-
-**Возможности дашборда:**
-- Trust Score gauge с цветовой индикацией
-- Карточки статистики по severity (Critical / High / Medium / Low)
-- Форма запуска скана с выбором роли, окружения и auto-approve
-- Таблица находок с фильтром по тексту
-- Agent trajectory panel — какие агенты выполнялись
-- Policy log — решения structural/semantic gates
-- Red Team scan
-- Green Team — suggested fixes
-- Экспорт результатов в JSON и Markdown
-
-**Безопасность фронтенда:**
-- Весь динамический контент рендерится через `textContent` / `createElement`
-- Никакого `innerHTML` с пользовательскими данными
-- Все ассеты Bootstrap загружаются локально, нет внешних CDN
+| `pii_mask.py` | Masks emails, API keys, IPs, SSNs in text |
+| `context_hygiene.py` | Resolves `[[VAR]]` placeholders and sanitizes tool arguments recursively |
 
 ---
 
-## 4. Установка и настройка
+## 8. Trust Score, Judge, and Reports
 
-### 4.1. Системные требования
+### Trust Score
 
-- Python 3.14+
-- Linux, macOS или Windows с WSL
-- Docker (опционально, для контейнерного запуска)
-- Интернет (опционально, только для CVE Intelligence Gathering и LLM-оценки)
+**File:** `sdg/evaluation/trust_score.py`
 
-### 4.2. Установка зависимостей
+The trust score starts at 1.0 and decreases based on finding severity:
 
-```bash
-pip install -r requirements.txt
-```
-
-Основные зависимости:
-- `bandit` — SAST-сканер
-- `pyyaml` — YAML-парсер
-- `pydantic` — валидация данных
-- `httpx` — HTTP-клиент
-- `python-dotenv` — загрузка `.env`
-- `mcp` — MCP SDK
-- `fastapi`, `uvicorn`, `jinja2`, `anyio` — веб-фреймворк
-- `pytest`, `pytest-cov` — тестирование
-
-### 4.3. Настройка окружения
-
-Скопируйте пример и вставьте свой OpenRouter API ключ:
-
-```bash
-cp sdg/.env.example .env
-# отредактируйте .env
-```
-
-```env
-OPENROUTER_API_KEY=sk-or-v1-ваш_ключ
-OPENROUTER_MODEL=google/gemini-2.5-flash-lite-preview-05-2025
-```
-
-**Важно:** `.env` добавлен в `.gitignore` и не должен попадать в репозиторий. Если ключ был случайно закоммичен — немедленно отзовите его в OpenRouter и создайте новый.
-
-### 4.4. Запуск тестов
-
-```bash
-python3 -m pytest tests/ -v
-# 86 тестов должны пройти
-```
-
----
-
-## 5. Использование
-
-### 5.1. CLI
-
-```bash
-# Полный скан с авто-одобрением (для CI)
-python3 -m sdg.cli scan ./my-project --auto-approve
-
-# Скан с выбором роли и окружения
-python3 -m sdg.cli scan ./my-project --role admin --environment production
-
-# JSON-вывод
-python3 -m sdg.cli scan . --format json
-
-# Сохранить отчёт в файл
-python3 -m sdg.cli scan . --output report.md
-
-# Red Team scan (adversarial)
-python3 -m sdg.cli red-team ./my-project
-
-# Green Team (авто-фикс из findings)
-python3 -m sdg.cli green-team findings.json
-
-# CVE Intelligence Gathering
-python3 -m sdg.cve_intelligence.cli CVE-2023-46695
-```
-
-### 5.2. Веб-интерфейс
-
-```bash
-python3 -m uvicorn sdg.frontend.app:app --host 0.0.0.0 --port 8000
-```
-
-Откройте в браузере: http://localhost:8000
-
-**Как пользоваться фронтендом:**
-
-1. На главной странице введите путь к сканируемому проекту (по умолчанию `.`)
-2. Выберите роль (`developer`, `admin`, `reviewer`, `viewer`) и окружение (`local`, `ci`, `staging`, `production`)
-3. Опционально включите **Auto-approve**, чтобы пропустить HITL-гейт
-4. Нажмите **Run Full Scan**
-5. После завершения появятся:
-   - Trust Score и pass/fail статус
-   - Карточки с количеством находок по severity
-   - Таблица находок с фильтром
-   - Agent trajectory и policy log
-   - Raw results (полный JSON)
-6. Для adversarial-скана нажмите **Red Team Scan**
-7. Для экспорта используйте кнопки **JSON** и **Markdown**
-
-### 5.3. Docker
-
-```bash
-# Сборка и запуск
-docker-compose up --build
-
-# Только сборка образа
-docker build -t sdg .
-
-# Запуск контейнера
-docker run -p 8000:8000 --env-file .env sdg
-```
-
-Контейнер:
-- Запускается от непривилегированного пользователя `sdg`
-- Имеет HEALTHCHECK
-- Не включает `.env`, `.venv`, тесты и git-историю (`.dockerignore`)
-
----
-
-## 6. Работа в PyCharm
-
-### 6.1. Открытие проекта
-
-1. Откройте PyCharm
-2. `File` → `Open` → выберите папку `/home/dev/PycharmProjects/PythonProject3`
-3. PyCharm автоматически распознает Python 3.14 и структуру проекта
-
-### 6.2. Настройка интерпретатора
-
-1. `File` → `Settings` → `Project: PythonProject3` → `Python Interpreter`
-2. Выберите системный Python 3.14 или создайте виртуальное окружение
-3. Установите зависимости:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-### 6.3. Запуск фронтенда из PyCharm
-
-1. Создайте Run Configuration:
-   - `Run` → `Edit Configurations` → `+` → `Python`
-   - **Script path:** `uvicorn`
-   - **Parameters:** `sdg.frontend.app:app --host 0.0.0.0 --port 8000 --reload`
-   - **Working directory:** `/home/dev/PycharmProjects/PythonProject3`
-2. Нажмите `Run` или `Debug`
-3. Откройте http://localhost:8000 в браузере
-
-### 6.4. Запуск CLI из PyCharm
-
-1. `Run` → `Edit Configurations` → `+` → `Python`
-2. **Module name:** `sdg.cli`
-3. **Parameters:** `scan . --auto-approve --format json`
-4. **Working directory:** `/home/dev/PycharmProjects/PythonProject3`
-
-### 6.5. Запуск тестов
-
-В терминале PyCharm:
-
-```bash
-python3 -m pytest tests/ -v
-```
-
-Или через интерфейс: правый клик на папке `tests` → `Run pytest in tests`.
-
----
-
-## 7. Развёртывание на GitHub
-
-### 7.1. Подготовка репозитория
-
-Проект уже инициализирован как git-репозиторий. Основная ветка — `main`. Новая функциональность (CVE Intelligence Gathering) разрабатывалась в git worktree:
-
-```
-/home/dev/PycharmProjects/PythonProject3              # main ветка
-/home/dev/PycharmProjects/PythonProject3/.worktrees/cve-intelligence  # feature/cve-intelligence
-```
-
-### 7.2. Завершение работы в worktree
-
-Перейдите в worktree, закоммитьте изменения:
-
-```bash
-cd /home/dev/PycharmProjects/PythonProject3/.worktrees/cve-intelligence
-git add .
-git commit -m "feat: add CVE Intelligence Gathering integration"
-```
-
-### 7.3. Слияние в main
-
-```bash
-cd /home/dev/PycharmProjects/PythonProject3
-git checkout main
-git merge feature/cve-intelligence
-```
-
-### 7.4. Публикация на GitHub
-
-```bash
-# Создайте репозиторий на GitHub через веб-интерфейс, затем:
-git remote add origin https://github.com/ВАШ_ЮЗЕРНЕЙМ/secure-deploy-guard.git
-git branch -M main
-git push -u origin main
-
-# Для публикации feature-ветки:
-git checkout feature/cve-intelligence
-git push -u origin feature/cve-intelligence
-```
-
-### 7.5. CI/CD (GitHub Actions)
-
-Пример workflow находится в `.github/workflows/`. Он запускает тесты при каждом push и pull request:
-
-```yaml
-name: Tests
-on: [push, pull_request]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.14'
-      - run: pip install -r requirements.txt
-      - run: pytest tests/ -v
-```
-
----
-
-## 8. Безопасность
-
-- Секреты хранятся в `.env`, который исключён из git
-- Semantic Gate работает по принципу fail-closed при реальных ошибках LLM; при отсутствии API ключа пропускается
-- Structural Gate поддерживает `required_approval` с корректной маршрутизацией на HITL
-- Frontend использует только безопасный DOM-рендеринг (`textContent`/`createElement`), никакого `innerHTML` с пользовательскими данными
-- Все статические ассеты Bootstrap загружаются локально (нет внешних CDN)
-- Docker-контейнер запускается от непривилегированного пользователя
-- Sandbox executor валидирует пути через `Path.relative_to` и запрещает shell-строки
-- CVE-запросы выполняются с таймаутом и не блокируют основной поток
-- Соответствие 7-pillar архитектуре описано в `docs/security/7-pillars-mapping.md`
-
----
-
-## 9. Trust Score
-
-| Severity | Вычет |
+| Severity | Deduction |
 |---|---|
 | CRITICAL | -0.30 |
 | HIGH | -0.15 |
 | MEDIUM | -0.05 |
 | LOW | -0.01 |
 
-Скан считается **пройденным** (`passed: true`), если `trust_score >= 0.5` и нет critical findings.
+A scan passes only if `trust_score >= 0.5` and there are no critical findings.
+
+### LLM Judge
+
+See [LLMJudge](#57-llmjudge).
+
+### Reports
+
+**File:** `sdg/evaluation/report.py`
+
+Generated outputs:
+- CLI table
+- JSON (`--format json`)
+- Markdown (`sdg-report.md` or `--output path`)
+- Web dashboard rendered in `sdg/frontend/`
 
 ---
 
-## 10. Agent Skills (`.agent/skills/`)
+## 9. Installation and Configuration
 
-Каждый skill — это папка с `SKILL.md` и YAML frontmatter, соответствующая canonical формату из whitepaper "Agent Skills":
+### 9.1 Requirements
 
-| Навык | Тип | Описание |
-|---|---|---|
-| `security-sast` | read-only | SAST-скан через Bandit + regex-паттерны |
-| `security-sca` | read-only | Аудит CVE-уязвимостей в зависимостях |
-| `security-config` | read-only | Проверка Docker/K8s/Terraform конфигов |
-| `red-team` | read-only | Поиск adversarial-паттернов |
-| `blue-team` | read-only | Мониторинг аномалий |
-| `green-team` | draft-only | Авто-генерация патчей |
+- Python 3.14 or newer
+- Linux, macOS, or WSL
+- Internet connection (only required for LLM calls and CVE enrichment)
+
+### 9.2 Local Installation
+
+```bash
+# Clone or navigate to the project directory
+cd /path/to/secure-deploy-guard
+
+# Create a virtual environment
+python3 -m venv .venv
+
+# Activate it
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### 9.3 Environment Variables
+
+Copy the example file and add your OpenRouter API key:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```env
+OPENROUTER_API_KEY=sk-or-v1-your-key-here
+OPENROUTER_MODEL=google/gemini-2.5-flash-lite-preview-09-2025
+```
+
+`OPENROUTER_API_KEY` is required only for LLM Judge and SemanticGate. All other scanners work without it.
+
+### 9.4 Verify Installation
+
+```bash
+# Run the test suite
+.venv/bin/python -m pytest tests/ -v
+
+# Run a quick scan
+.venv/bin/python -m sdg.cli scan . --auto-approve
+```
 
 ---
 
-## 11. Структура проекта
+## 10. Usage
+
+### 10.1 CLI
+
+```bash
+# Basic scan: SAST + SCA + Config
+.venv/bin/python -m sdg.cli scan ./my-project --auto-approve
+
+# Full pipeline: scan + Red Team + Green Team fixes
+.venv/bin/python -m sdg.cli scan ./my-project --auto-approve --full
+
+# Scan with role and environment
+.venv/bin/python -m sdg.cli scan ./my-project --role admin --environment production
+
+# JSON output
+.venv/bin/python -m sdg.cli scan . --format json
+
+# Save Markdown report
+.venv/bin/python -m sdg.cli scan . --output report.md
+
+# Red Team scan only
+.venv/bin/python -m sdg.cli red-team ./my-project
+
+# Green Team fixes from findings JSON
+.venv/bin/python -m sdg.cli green-team findings.json
+
+# CVE lookup
+.venv/bin/python -m sdg.cve_intelligence.cli CVE-2023-46695
+```
+
+### 10.2 Web Dashboard
+
+```bash
+.venv/bin/python -m uvicorn sdg.frontend.app:app --host 0.0.0.0 --port 8000
+```
+
+Open http://localhost:8000 in a browser.
+
+Dashboard features:
+- Path, role, and environment selection.
+- Auto-approve checkbox to skip HITL.
+- Full pipeline checkbox to include Red Team + Green Team.
+- Trust Score gauge with pass/fail badge.
+- Severity cards (Critical / High / Medium / Low).
+- Filterable findings table.
+- Agent trajectory and policy log.
+- Green Team suggested fixes panel.
+- Export to JSON and Markdown.
+
+---
+
+## 11. Docker Deployment
+
+### 11.1 Why Use Docker
+
+Docker provides a clean, reproducible runtime for SDG. It is useful for:
+- CI/CD pipelines where you do not want to install Python dependencies on the runner.
+- Shared development environments.
+- Running the web dashboard without polluting the host system.
+
+### 11.2 Creating the Docker Files
+
+Because Docker files were removed from the repository, recreate them in the project root.
+
+**`Dockerfile`**
+
+```dockerfile
+FROM python:3.14-slim
+
+# Install system dependencies
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a non-root user
+RUN useradd -m -u 1000 sdg
+
+# Set working directory
+WORKDIR /app
+
+# Copy dependency manifest and install Python packages
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY sdg/ ./sdg/
+COPY tests/ ./tests/
+
+# Change ownership
+RUN chown -R sdg:sdg /app
+
+# Switch to non-root user
+USER sdg
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" || exit 1
+
+# Default command: web dashboard
+CMD ["python", "-m", "uvicorn", "sdg.frontend.app:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+**`docker-compose.yml`**
+
+```yaml
+services:
+  sdg:
+    build: .
+    container_name: secure-deploy-guard
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./:/app/workspace:ro
+    working_dir: /app
+    command: ["python", "-m", "uvicorn", "sdg.frontend.app:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+**`.dockerignore`**
+
+```text
+.env
+.venv
+.git
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.swg-report.md
+report.md
+```
+
+### 11.3 Building and Running
+
+```bash
+# Build the image
+docker build -t secure-deploy-guard .
+
+# Run the web dashboard
+ docker run -d \
+  --name sdg \
+  -p 8000:8000 \
+  --env-file .env \
+  secure-deploy-guard
+
+# Or use docker-compose
+docker-compose up --build -d
+```
+
+Access the dashboard at http://localhost:8000.
+
+### 11.4 Running a Scan Inside Docker
+
+```bash
+# Run a one-off scan inside the container
+docker run --rm \
+  --env-file .env \
+  -v "$(pwd)/my-project:/workspace:ro" \
+  secure-deploy-guard \
+  python -m sdg.cli scan /workspace --auto-approve --full
+```
+
+### 11.5 Docker in CI/CD
+
+```yaml
+# Example GitHub Actions workflow
+name: SDG Security Scan
+on: [push, pull_request]
+jobs:
+  sdg-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build SDG image
+        run: docker build -t sdg .
+      - name: Run SDG scan
+        run: |
+          docker run --rm \
+            -e OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }} \
+            -v "$(pwd):/workspace:ro" \
+            sdg \
+            python -m sdg.cli scan /workspace --auto-approve --full
+```
+
+---
+
+## 12. PyCharm Setup
+
+### 12.1 Open the Project
+
+1. Open PyCharm.
+2. `File → Open` and select the project folder.
+3. PyCharm will detect Python 3.14 and the project structure.
+
+### 12.2 Configure Interpreter
+
+1. `File → Settings → Project → Python Interpreter`.
+2. Select `.venv/bin/python`.
+3. Install dependencies if needed:
+
+```bash
+pip install -r requirements.txt
+```
+
+### 12.3 Run CLI from PyCharm
+
+1. `Run → Edit Configurations → + → Python`.
+2. **Module name:** `sdg.cli`
+3. **Parameters:** `scan . --auto-approve --full`
+4. **Working directory:** project root
+
+### 12.4 Run Web Dashboard from PyCharm
+
+1. `Run → Edit Configurations → + → Python`.
+2. **Module name:** `uvicorn`
+3. **Parameters:** `sdg.frontend.app:app --host 0.0.0.0 --port 8000 --reload`
+4. **Working directory:** project root
+
+---
+
+## 13. Project Structure
 
 ```
 .
-├── .agent/skills/               # Навыки агентов (6 шт.)
-│   ├── security-sast/SKILL.md
-│   ├── security-sca/SKILL.md
-│   ├── security-config/SKILL.md
-│   ├── red-team/SKILL.md
-│   ├── blue-team/SKILL.md
-│   └── green-team/SKILL.md
-├── docs/
-│   ├── security/7-pillars-mapping.md
-│   └── superpowers/specs/
-│       └── 2026-07-01-sdg-frontend-compliance-redesign.md
-├── sdg/
-│   ├── adk/                     # ADK-агенты (оркестрация)
-│   ├── agents/                  # Агенты сканирования
-│   ├── cve_intelligence/        # CVE Intelligence Gathering
-│   ├── mcp_servers/             # MCP-серверы (4 шт.)
-│   ├── orchestrator/            # Сессия Orchestrator
-│   ├── policy_engine/           # Политики безопасности
-│   ├── sandbox/                 # Песочница
-│   ├── evaluation/              # Оценка (Trust, Judge, Report)
-│   ├── hitl/                    # Human-in-the-Loop
-│   ├── red_blue_green/          # Команды безопасности
-│   ├── frontend/                # Веб-интерфейс
+├── sdg/                                # Main application package
+│   ├── adk/                            # ADK-style agents
+│   │   ├── orchestrator.py             # OrchestratorAgent
+│   │   ├── llm_agent.py                # LlmAgent wrapper
+│   │   └── parallel_agent.py           # Parallel execution helper
+│   ├── agents/                         # Scanning agents
+│   │   ├── base.py                     # BaseAgent abstract class
+│   │   ├── sast_agent.py               # SAST via MCP Bandit + Semgrep
+│   │   ├── sca_agent.py                # SCA + CVE intelligence
+│   │   └── config_agent.py             # Config via MCP Docker
+│   ├── cve_intelligence/               # CVE enrichment (NVD, MITRE, OSV)
+│   │   ├── models.py
+│   │   ├── sources.py
+│   │   ├── gatherer.py
+│   │   └── cli.py
+│   ├── evaluation/                     # Scoring and reporting
+│   │   ├── judge.py                    # LLM Judge
+│   │   ├── trust_score.py              # Trust Score calculator
+│   │   └── report.py                   # Report generator
+│   ├── frontend/                       # FastAPI web dashboard
 │   │   ├── app.py
 │   │   ├── templates/
 │   │   │   └── dashboard.html
@@ -470,65 +606,154 @@ jobs:
 │   │       ├── bootstrap.bundle.min.js
 │   │       ├── sdg-dashboard.css
 │   │       └── sdg-dashboard.js
-│   ├── utils/                   # Утилиты (LLM, паттерны)
-│   ├── config.py / config.yaml  # Конфигурация
-│   └── models.py                # Модели данных
-├── tests/                       # 86 тестов
-├── Dockerfile
-├── docker-compose.yml
-├── .dockerignore
+│   ├── hitl/                           # Human-in-the-Loop
+│   │   ├── approval.py                 # Approval gate
+│   │   └── vibe_diff.py                # Plain-English summary
+│   ├── mcp_servers/                    # MCP servers and client
+│   │   ├── client.py                   # MCPClient
+│   │   ├── server_bandit.py
+│   │   ├── server_semgrep.py
+│   │   ├── server_docker.py
+│   │   └── server_secrets.py
+│   ├── orchestrator/
+│   │   └── session.py                  # Session / Memory Bank
+│   ├── policy_engine/                  # Policy enforcement
+│   │   ├── structural.py               # Role × environment gate
+│   │   ├── semantic.py                 # LLM semantic gate
+│   │   ├── pii_mask.py                 # PII masker
+│   │   └── context_hygiene.py          # Argument sanitizer
+│   ├── red_blue_green/                 # Security teams
+│   │   ├── red_team.py                 # Adversarial scan
+│   │   ├── blue_team.py                # Anomaly detection
+│   │   └── green_team.py               # Auto-fix suggestions
+│   ├── sandbox/
+│   │   └── executor.py                 # Subprocess sandbox
+│   ├── utils/
+│   │   ├── llm.py                      # OpenRouter LLM client
+│   │   └── patterns.py                 # Regex SAST patterns
+│   ├── config.py                       # Configuration loader
+│   ├── config.yaml                     # Default policies and settings
+│   └── models.py                       # Finding, ScanTarget, ScanReport
+├── tests/                              # pytest test suite
+├── .env.example                        # Environment variable template
 ├── .gitignore
-└── requirements.txt
+├── requirements.txt                    # Python dependencies
+└── README.md                           # This file
 ```
 
 ---
 
-## 12. Технологии
+## 14. Configuration Reference
 
-- **Python 3.14** — язык реализации
-- **OpenRouter API** — LLM-запросы (Gemini 2.5 Flash Lite)
-- **FastAPI + Starlette + Uvicorn** — веб-фреймворк
-- **MCP SDK (1.28+)** — Model Context Protocol для серверов
-- **Jinja2** — шаблонизатор
-- **Bootstrap 5 (dark)** — UI
-- **httpx** — HTTP-клиент для LLM и CVE API
-- **pytest** — тестирование
-- **Bandit** — SAST-сканер (опционально)
+`sdg/config.yaml` contains the default configuration:
+
+```yaml
+environments:
+  local:
+    blocked_tools: []
+    required_approval: []
+  ci:
+    blocked_tools: []
+    required_approval: []
+  staging:
+    blocked_tools:
+      - deploy
+      - send_email
+    required_approval: []
+  production:
+    blocked_tools:
+      - write_file
+      - delete_file
+      - deploy
+    required_approval:
+      - deploy
+      - database_migration
+      - scan
+
+roles:
+  viewer:
+    allowed_tools:
+      - scan
+      - read
+  developer:
+    allowed_tools:
+      - "*"
+    except:
+      - deploy
+      - send_email
+  reviewer:
+    allowed_tools:
+      - scan
+      - read
+      - evaluate
+  admin:
+    allowed_tools:
+      - "*"
+    requires_mfa: true
+
+scanning:
+  enabled_agents:
+    - sast
+    - sca
+    - config
+  severity_threshold: medium
+  fail_on: critical
+  excluded_dirs:
+    - .venv
+    - __pycache__
+    - .git
+    - .pytest_cache
+    - node_modules
+    - .superpowers
+    - .worktrees
+    - tests
+  excluded_file_patterns:
+    - "*.min.js"
+    - "*.min.css"
+```
+
+You can override settings by editing `sdg/config.yaml` or by passing a custom path to `load_config()`.
 
 ---
 
-## 13. Troubleshooting
+## 15. Troubleshooting
 
 ### `ModuleNotFoundError: No module named 'sdg'`
 
-Запускайте команды из корня проекта `/home/dev/PycharmProjects/PythonProject3`, а не из подпапок.
+Run commands from the project root. If using a virtual environment, activate it:
 
-### LLM Judge возвращает "judge skipped: no API key"
+```bash
+source .venv/bin/activate
+```
 
-Это нормально при отсутствии `OPENROUTER_API_KEY`. Скан продолжит работу. Для включения LLM-оценки создайте `.env` с ключом.
+### `Judge Score: 3 / judge skipped: no API key`
 
-### Semantic policy violation без API ключа
+Create `.env` with a valid `OPENROUTER_API_KEY`.
 
-Semantic Gate пропускается, если LLM не сконфигурирован. При наличии ключа он выполняет реальную проверку.
+### Bandit not found inside MCP server
 
-### Docker образ не собирается
+Make sure Bandit is installed in the same environment:
 
-Убедитесь, что у вас есть `.env` файл (можно пустой) рядом с `docker-compose.yml`, или закомментируйте строку `env_file` в `docker-compose.yml`.
+```bash
+.venv/bin/bandit --version
+```
 
-### Фронтенд не загружает статику
+`MCPClient` automatically adds `.venv/bin` to `PATH`.
 
-Проверьте, что файлы `bootstrap.min.css`, `bootstrap.bundle.min.js`, `sdg-dashboard.css`, `sdg-dashboard.js` находятся в `sdg/frontend/static/`.
+### Docker container cannot find `sdg` module
 
-### CVE Intelligence Gathering медленный
+Ensure the Docker image copies the project root into `/app` and that `PYTHONPATH` includes `/app` if needed.
 
-По умолчанию таймаут 10 секунд на источник. Можно изменить в `config.yaml`:
+### CVE Intelligence Gathering is slow
+
+Adjust timeout in `config.yaml`:
 
 ```yaml
 enable_cve_intelligence: true
 cve_intelligence_timeout: 5.0
 ```
 
-Или отключить:
+Or disable it:
 
 ```yaml
 enable_cve_intelligence: false
@@ -536,6 +761,6 @@ enable_cve_intelligence: false
 
 ---
 
-## 14. Лицензия
+## 16. License
 
 MIT

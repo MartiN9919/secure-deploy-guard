@@ -2,7 +2,18 @@ from __future__ import annotations
 import re, os
 from sdg.models import Finding, Severity, ScanCategory
 
-EXCLUDED_DIRS = {".venv", "__pycache__", ".git", ".pytest_cache", "node_modules", ".superpowers"}
+from sdg.config import load_config
+
+_config = load_config()
+_cfg_scan = _config.get("scanning", {})
+EXCLUDED_DIRS = {".venv", "__pycache__", ".git", ".pytest_cache", "node_modules", ".superpowers", ".worktrees"}
+EXCLUDED_DIRS.update(set(_cfg_scan.get("excluded_dirs", [])))
+EXCLUDED_FILE_PATTERNS = ["*.min.js", "*.min.css"]
+EXCLUDED_FILE_PATTERNS.extend(_cfg_scan.get("excluded_file_patterns", []))
+
+def _is_excluded_file(file_path: str) -> bool:
+    name = os.path.basename(file_path).lower()
+    return any(name.endswith(ext.lstrip("*")) for ext in EXCLUDED_FILE_PATTERNS)
 
 PATTERNS = [
     {"category": ScanCategory.SQL_INJECTION, "severity": Severity.CRITICAL, "name": "SQL Injection via string concat", "pattern": r'execute\s*\(\s*["\'][^"\']*["\']\s*\+', "ext": [".py"], "message": "SQL query built via string concatenation — use parameterized queries", "recommendation": "Use parameterized queries"},
@@ -20,7 +31,11 @@ PATTERNS = [
 
 def _should_scan(file_path: str) -> bool:
     parts = file_path.replace("\\", "/").split("/")
-    return not any(p in EXCLUDED_DIRS for p in parts)
+    if any(p in EXCLUDED_DIRS for p in parts):
+        return False
+    if _is_excluded_file(file_path):
+        return False
+    return True
 
 def scan_with_patterns(file_path: str, content: str) -> list[Finding]:
     if not _should_scan(file_path):

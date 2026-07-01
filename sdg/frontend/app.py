@@ -56,13 +56,21 @@ async def run_scan(
     role: str = Form("developer"),
     env: str = Form("local"),
     auto_approve: bool = Form(False),
+    full_pipeline: bool = Form(False),
 ):
     target_path = _validate_scan_path(path)
     config = load_config()
     config["auto_approve"] = auto_approve
     orchestrator = OrchestratorAgent(config)
     target = ScanTarget(path=str(target_path))
-    result = await anyio.to_thread.run_sync(orchestrator.run, target, role, env)
+    result = await anyio.to_thread.run_sync(
+        orchestrator.run,
+        target,
+        role,
+        env,
+        full_pipeline,
+        full_pipeline,
+    )
     return JSONResponse(result)
 
 

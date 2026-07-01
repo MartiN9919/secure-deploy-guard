@@ -1,12 +1,25 @@
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+import os
+import sys
 
 
 class MCPClient:
     def __init__(self, server_script: str, server_args: list[str] | None = None):
+        self.server_script = server_script
+        cwd = os.getcwd()
+        env = os.environ.copy()
+        python_path = env.get("PYTHONPATH", "")
+        if cwd not in python_path.split(os.pathsep):
+            env["PYTHONPATH"] = cwd + (os.pathsep + python_path if python_path else "")
+        # Ensure PATH includes the virtual environment so spawned tools like bandit are found.
+        venv_bin = os.path.join(cwd, ".venv", "bin")
+        if os.path.isdir(venv_bin):
+            env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
         self.server_params = StdioServerParameters(
-            command="python",
+            command=sys.executable,
             args=[server_script] + (server_args or []),
+            env=env,
         )
 
     async def list_tools(self) -> list[tuple[str, str]]:

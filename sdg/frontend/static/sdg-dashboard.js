@@ -12,6 +12,7 @@
         scanRole: document.getElementById('scanRole'),
         scanEnv: document.getElementById('scanEnv'),
         autoApprove: document.getElementById('autoApprove'),
+        fullPipeline: document.getElementById('fullPipeline'),
         btnScan: document.getElementById('btnScan'),
         btnRedTeam: document.getElementById('btnRedTeam'),
         btnExportMd: document.getElementById('btnExportMd'),
@@ -238,9 +239,13 @@
         renderFindings(report.findings);
         renderAgentLog(summary.agents_run);
         renderPolicyLog(result);
-        renderGreenPanel(result.green_fixes);
+        renderGreenPanel(result.green_fixes || result.green_team_fixes);
         els.rawResults.textContent = JSON.stringify(result, null, 2);
         showResults();
+    }
+
+    function renderFullPipelineResult(result) {
+        renderScanResult(result);
     }
 
     function renderRedTeamResult(result) {
@@ -301,6 +306,7 @@
             form.append('role', els.scanRole.value);
             form.append('env', els.scanEnv.value);
             form.append('auto_approve', els.autoApprove.checked);
+            form.append('full_pipeline', els.fullPipeline.checked);
             const data = await postForm('/api/scan', form);
             renderScanResult(data);
         } catch (err) {

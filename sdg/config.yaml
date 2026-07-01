@@ -48,3 +48,15 @@ scanning:
     - config
   severity_threshold: medium
   fail_on: critical
+  excluded_dirs:
+    - .venv
+    - __pycache__
+    - .git
+    - .pytest_cache
+    - node_modules
+    - .superpowers
+    - .worktrees
+    - tests
+  excluded_file_patterns:
+    - "*.min.js"
+    - "*.min.css"

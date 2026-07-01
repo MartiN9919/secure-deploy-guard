@@ -1,10 +1,12 @@
 .env
-.venv
-__pycache__
+.venv/
+__pycache__/
 *.pyc
-.pytest_cache
+.pytest_cache/
 *.egg-info
 .DS_Store
 .vscode
 .idea
 node_modules
+sdg-report.md
+report.md

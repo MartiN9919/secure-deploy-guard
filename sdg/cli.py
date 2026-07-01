@@ -17,7 +17,13 @@ def cmd_scan(args: argparse.Namespace) -> None:
         cfg["auto_approve"] = True
     orchestrator = OrchestratorAgent(cfg)
     target = ScanTarget(path=args.path)
-    result = orchestrator.run(target, role=args.role, environment=args.environment)
+    result = orchestrator.run(
+        target,
+        role=args.role,
+        environment=args.environment,
+        run_red_team=args.full,
+        run_green_team=args.full,
+    )
     if args.format == "json":
         print(json.dumps(result, indent=2))
     else:
@@ -31,6 +37,10 @@ def cmd_scan(args: argparse.Namespace) -> None:
         for agent, report in result.get("agent_results", {}).items():
             if hasattr(report, "findings"):
                 print(f"  {agent}: {len(report.findings)} findings")
+        if result.get("red_team_findings"):
+            print(f"  red_team: {len(result['red_team_findings'])} findings")
+        if result.get("green_team_fixes"):
+            print(f"  green_team: {len(result['green_team_fixes'])} suggestions")
         eval_result = result.get("evaluation", {})
         if eval_result:
             print(f"Judge Score: {eval_result.get('score', 'N/A')}")
@@ -84,6 +94,7 @@ def main() -> None:
     scan_p.add_argument("--format", "-f", default="text", choices=["text", "json"])
     scan_p.add_argument("--output", "-o", default=None, help="Report output path")
     scan_p.add_argument("--auto-approve", action="store_true", help="Skip human approval")
+    scan_p.add_argument("--full", action="store_true", help="Run full pipeline: scan + red-team + green-team fixes automatically")
     scan_p.set_defaults(func=cmd_scan)
 
     rt_p = sub.add_parser("red-team", help="Run Red Team adversarial scan")
