@@ -5,6 +5,8 @@ import re
 from sdg.agents.base import BaseAgent
 from sdg.models import ScanReport, ScanTarget, Finding, Severity, ScanCategory
 
+from sdg.cve_intelligence.gatherer import CVEIntelligenceGatherer
+
 KNOWN_VULN = {
     "django": [{"versions": "<3.2.18", "cve": "CVE-2023-23969", "severity": Severity.HIGH}, {"versions": "<4.2.7", "cve": "CVE-2023-46695", "severity": Severity.HIGH}],
     "flask": [{"versions": "<2.3.2", "cve": "CVE-2023-30861", "severity": Severity.MEDIUM}],
@@ -28,6 +30,9 @@ def _in_range(version: str, spec: str) -> bool:
 class SCAAgent(BaseAgent):
     def __init__(self, config: dict[str, Any]):
         super().__init__("sca", config)
+        self.cve_gatherer: CVEIntelligenceGatherer | None = None
+        if config.get("enable_cve_intelligence", True):
+            self.cve_gatherer = CVEIntelligenceGatherer(timeout=config.get("cve_intelligence_timeout", 10.0))
 
     def execute(self, target: ScanTarget) -> ScanReport:
         report = ScanReport(target=target)
@@ -50,7 +55,18 @@ class SCAAgent(BaseAgent):
             if pkg in KNOWN_VULN:
                 for vuln in KNOWN_VULN[pkg]:
                     if _in_range(ver, vuln["versions"]):
-                        report.add_finding(Finding(severity=vuln["severity"], category=ScanCategory.DEPENDENCY_VULN, message=f"{pkg} {ver} — {vuln['cve']}", file_path=str(req_path), recommendation=f"Upgrade {pkg}"))
+                        message = f"{pkg} {ver} — {vuln['cve']}"
+                        recommendation = f"Upgrade {pkg}"
+                        if self.cve_gatherer:
+                            try:
+                                profile = self.cve_gatherer.gather(vuln["cve"])
+                                if profile.description:
+                                    message += f": {profile.description[:120]}"
+                                if profile.affected_packages and profile.affected_packages[0].fixed_version:
+                                    recommendation = f"Upgrade to {profile.affected_packages[0].fixed_version}"
+                            except Exception:
+                                pass
+                        report.add_finding(Finding(severity=vuln["severity"], category=ScanCategory.DEPENDENCY_VULN, message=message, file_path=str(req_path), recommendation=recommendation))
         if not report.findings:
             report.add_finding(Finding(severity=Severity.LOW, category=ScanCategory.CODE_QUALITY, message="No known vulnerabilities", file_path=str(req_path)))
         return report
