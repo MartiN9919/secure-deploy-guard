@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Deploy Guard</title>
+    <link href="/static/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/sdg-dashboard.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg border-bottom border-secondary">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">Secure Deploy Guard</a>
+            <span class="navbar-text text-muted">Pre-deployment security scanner</span>
+        </div>
+    </nav>
+
+    <div class="container py-4">
+        <div class="row">
+            <div class="col-lg-8">
+                <div class="card">
+                    <div class="card-header">Run Scan</div>
+                    <div class="card-body">
+                        <form id="scanForm">
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label for="scanPath" class="form-label">Path to scan</label>
+                                    <input type="text" class="form-control" id="scanPath" value="." required>
+                                </div>
+                                <div class="col-md-3">
+                                    <label for="scanRole" class="form-label">Role</label>
+                                    <select class="form-select" id="scanRole"></select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label for="scanEnv" class="form-label">Environment</label>
+                                    <select class="form-select" id="scanEnv"></select>
+                                </div>
+                            </div>
+                            <div class="form-check mt-3">
+                                <input class="form-check-input" type="checkbox" id="autoApprove">
+                                <label class="form-check-label" for="autoApprove">Auto-approve (skip HITL gate)</label>
+                            </div>
+                            <div class="mt-3">
+                                <button type="submit" class="btn btn-primary" id="btnScan">Run Full Scan</button>
+                                <button type="button" class="btn btn-outline-danger" id="btnRedTeam">Red Team Scan</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-4">
+                <div class="card">
+                    <div class="card-header">Agent Skills</div>
+                    <div class="card-body">
+                        <ul class="list-group list-group-flush">
+                            <li class="list-group-item bg-transparent text-light border-secondary">security-sast — Bandit + patterns</li>
+                            <li class="list-group-item bg-transparent text-light border-secondary">security-sca — CVE dependency audit</li>
+                            <li class="list-group-item bg-transparent text-light border-secondary">security-config — Docker/K8s checks</li>
+                            <li class="list-group-item bg-transparent text-secondary border-secondary">red-team / blue-team / green-team</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="errorAlert" class="alert alert-danger d-none mt-4" role="alert">
+            <strong>Error:</strong> <span id="errorText"></span>
+        </div>
+
+        <div id="resultCards" class="d-none">
+            <div class="row mb-4">
+                <div class="col-md-3">
+                    <div class="card stat-card severity-critical">
+                        <div class="number" id="statCritical">0</div>
+                        <div class="label">Critical</div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card stat-card severity-high">
+                        <div class="number" id="statHigh">0</div>
+                        <div class="label">High</div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card stat-card severity-medium">
+                        <div class="number" id="statMedium">0</div>
+                        <div class="label">Medium</div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card stat-card severity-low">
+                        <div class="number" id="statLow">0</div>
+                        <div class="label">Low</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span>Trust Score</span>
+                    <span id="passBadge" class="badge bg-secondary">—</span>
+                </div>
+                <div class="card-body">
+                    <div class="trust-gauge mb-2">
+                        <div class="bar" id="trustBar" style="width: 0%">0%</div>
+                    </div>
+                    <p class="mb-0 text-muted" id="trustText">Trust Score: —</p>
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="col-lg-8">
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span>Findings</span>
+                            <input type="text" class="form-control form-control-sm w-50" id="findingsFilter" placeholder="Filter findings...">
+                        </div>
+                        <div class="card-body p-0">
+                            <div class="table-responsive">
+                                <table class="table table-dark table-hover mb-0">
+                                    <thead>
+                                        <tr>
+                                            <th>Severity</th>
+                                            <th>Category</th>
+                                            <th>Message</th>
+                                            <th>Location</th>
+                                            <th>Fix</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="findingsTableBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-lg-4">
+                    <div class="card mb-3">
+                        <div class="card-header">Agent Trajectory</div>
+                        <div class="card-body p-0" id="agentLog"></div>
+                    </div>
+                    <div class="card mb-3">
+                        <div class="card-header">Policy Log</div>
+                        <div class="card-body p-0" id="policyLog"></div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">Export</div>
+                        <div class="card-body">
+                            <button class="btn btn-sm btn-outline-light me-2" id="btnExportJson">JSON</button>
+                            <button class="btn btn-sm btn-outline-light" id="btnExportMd">Markdown</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card mt-4 d-none" id="greenPanel">
+                <div class="card-header">Green Team — Suggested Fixes</div>
+                <div class="card-body">
+                    <ul class="list-group list-group-flush" id="greenList"></ul>
+                </div>
+            </div>
+
+            <div class="card mt-4">
+                <div class="card-header">Raw Results</div>
+                <div class="card-body">
+                    <pre class="raw-results mb-0" id="rawResults"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="spinner-overlay" id="spinnerOverlay">
+        <div class="text-center">
+            <div class="spinner-border text-light" role="status"></div>
+            <p class="text-light mt-2">Scanning...</p>
+        </div>
+    </div>
+
+    <script src="/static/bootstrap.bundle.min.js"></script>
+    <script src="/static/sdg-dashboard.js"></script>
+</body>
+</html>

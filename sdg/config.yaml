@@ -1,0 +1,50 @@
+environments:
+  local:
+    blocked_tools: []
+    required_approval: []
+  ci:
+    blocked_tools: []
+    required_approval: []
+  staging:
+    blocked_tools:
+      - deploy
+      - send_email
+    required_approval: []
+  production:
+    blocked_tools:
+      - write_file
+      - delete_file
+      - deploy
+    required_approval:
+      - deploy
+      - database_migration
+      - scan
+
+roles:
+  viewer:
+    allowed_tools:
+      - scan
+      - read
+  developer:
+    allowed_tools:
+      - "*"
+    except:
+      - deploy
+      - send_email
+  reviewer:
+    allowed_tools:
+      - scan
+      - read
+      - evaluate
+  admin:
+    allowed_tools:
+      - "*"
+    requires_mfa: true
+
+scanning:
+  enabled_agents:
+    - sast
+    - sca
+    - config
+  severity_threshold: medium
+  fail_on: critical
