@@ -25,8 +25,8 @@ Score 1-5 (1=clean, 5=critical). Return JSON: {{"score": int, "quality": str, "r
                 max_tokens=512,
                 response_format={"type": "json_object"},
             )
-            if "no api key" in result.lower():
-                return {"score": 3, "quality": "judge skipped: no API key", "recommendation": ""}
+            if "no api key" in result.lower() or "rate limit" in result.lower():
+                return {"score": 3, "quality": result, "recommendation": ""}
             parsed = json.loads(result)
             return {
                 "score": int(parsed.get("score", 3)),

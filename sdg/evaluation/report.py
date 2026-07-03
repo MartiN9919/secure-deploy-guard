@@ -1,6 +1,10 @@
 from __future__ import annotations
+import json
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from sdg.orchestrator.session import Session
+
 
 class ReportGenerator:
     def generate(self, session: Session) -> dict:
@@ -27,3 +31,55 @@ class ReportGenerator:
                 lines.append(f"- **[{f['severity'].upper()}]** {f['category']}: {f['message']} {loc}")
                 if f.get("recommendation"): lines.append(f"  - *Fix:* {f['recommendation']}")
         return "\n".join(lines)
+
+    def generate_sbom(self, session: Session, requirements_path: Path | None = None) -> dict:
+        """Generate a CycloneDX 1.5 JSON SBOM from requirements.txt."""
+        target_path = Path(session.target.path)
+        req_path = requirements_path or (target_path / "requirements.txt")
+        components = []
+        if req_path.exists():
+            for line in req_path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or line.startswith("-"):
+                    continue
+                # Simple parsing: name==version, name>=version, etc.
+                import re
+                m = re.match(r"([a-zA-Z0-9_.\-]+)\s*([=<>!~]+)\s*([a-zA-Z0-9_.\-]+)", line)
+                if m:
+                    name, _, version = m.groups()
+                    components.append({
+                        "type": "library",
+                        "name": name,
+                        "version": version,
+                        "purl": f"pkg:pypi/{name}@{version}",
+                        "bom-ref": f"pkg:pypi/{name}@{version}",
+                    })
+                else:
+                    # Unpinned dependency
+                    components.append({
+                        "type": "library",
+                        "name": line.split()[0],
+                        "version": "",
+                        "purl": f"pkg:pypi/{line.split()[0]}",
+                        "bom-ref": f"pkg:pypi/{line.split()[0]}",
+                    })
+        return {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "serialNumber": f"urn:uuid:{uuid.uuid4()}",
+            "version": 1,
+            "metadata": {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "tools": [
+                    {
+                        "vendor": "Secure Deploy Guard",
+                        "name": "sdg",
+                        "version": "0.2.0",
+                    }
+                ],
+            },
+            "components": components,
+        }
+
+    def sbom_to_json(self, session: Session, requirements_path: Path | None = None) -> str:
+        return json.dumps(self.generate_sbom(session, requirements_path), indent=2)

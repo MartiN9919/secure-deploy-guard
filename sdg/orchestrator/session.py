@@ -12,9 +12,17 @@ class Session:
         self.agent_results: dict[str, Any] = {}
         self.trust_score: float = 1.0
         self.approved: bool = False
+        self.ignored_findings: list[Finding] = []
 
     def add_result(self, name: str, report: Any) -> None:
         self.agent_results[name] = report
+
+    def set_filtered_findings(self, kept: list[Finding], ignored: list[Finding]) -> None:
+        """Replace findings in reports after ignore filtering."""
+        self.ignored_findings = ignored
+        for report in self.agent_results.values():
+            if hasattr(report, "findings"):
+                report.findings = kept
 
     def get_all_findings(self) -> list[Finding]:
         findings: list[Finding] = []
@@ -33,4 +41,5 @@ class Session:
             "total_findings": len(findings),
             "by_severity": by_severity,
             "agents_run": list(self.agent_results.keys()),
+            "ignored": len(self.ignored_findings),
         }

@@ -46,6 +46,7 @@ scanning:
     - sast
     - sca
     - config
+    - secrets
   severity_threshold: medium
   fail_on: critical
   excluded_dirs:
@@ -60,3 +61,8 @@ scanning:
   excluded_file_patterns:
     - "*.min.js"
     - "*.min.css"
+
+llm_rate_limit_calls_per_minute: 30
+llm_rate_limit_calls_per_scan: 10
+ignore_baseline_path: .sdg-ignore
+

@@ -10,3 +10,4 @@ __pycache__/
 node_modules
 sdg-report.md
 report.md
+.sdg-ignore

@@ -15,6 +15,7 @@ class OrchestratorAgent:
         from sdg.agents.sast_agent import SASTAgent
         from sdg.agents.sca_agent import SCAAgent
         from sdg.agents.config_agent import ConfigAgent
+        from sdg.agents.secrets_agent import SecretsAgent
         from sdg.policy_engine.structural import StructuralGate
         from sdg.policy_engine.semantic import SemanticGate
         from sdg.evaluation.trust_score import TrustScoreCalculator
@@ -26,6 +27,7 @@ class OrchestratorAgent:
         self.sast = SASTAgent(config)
         self.sca = SCAAgent(config)
         self.config_agent = ConfigAgent(config)
+        self.secrets = SecretsAgent(config)
         self.policy_structural = StructuralGate(config)
         self.policy_semantic = SemanticGate(config)
         self.trust_calc = TrustScoreCalculator()
@@ -57,21 +59,33 @@ class OrchestratorAgent:
             return {"error": f"Scan blocked: {reason}", "session_id": session.session_id}
 
         # Run agents sequentially (simulated parallel)
-        agents = {"sast": self.sast, "sca": self.sca, "config_agent": self.config_agent}
+        agents = {"sast": self.sast, "sca": self.sca, "config_agent": self.config_agent, "secrets": self.secrets}
+        enabled = set(self.config.get("scanning", {}).get("enabled_agents", ["sast", "sca", "config", "secrets"]))
         for name, agent in agents.items():
+            if name not in enabled:
+                continue
             try:
                 report = agent.execute(target)
                 session.add_result(name, report)
             except Exception as e:
                 session.add_result(name, type('obj', (object,), {'findings': []})())
 
+        # Apply ignore filtering (inline comments + baseline file)
+        from sdg.utils.ignore_manager import IgnoreManager
+        ignore = IgnoreManager(self.config.get("ignore_baseline_path"))
+        all_findings = session.get_all_findings()
+        kept = ignore.filter_findings(all_findings)
+        ignored = [f for f in all_findings if f not in kept]
+        session.set_filtered_findings(kept, ignored)
+
         # Semantic policy check on critical findings
         critical_findings = [f for f in session.get_all_findings() if hasattr(f, 'severity') and f.severity.value == "critical"]
         if critical_findings:
-            action_desc = f"Found {len(critical_findings)} critical vulnerabilities in {target.path}"
-            allowed, reason = self.policy_semantic.check_action(action_desc)
-            if not allowed:
-                return {"error": f"Semantic policy violation: {reason}", "session_id": session.session_id}
+            descriptions = [f"Critical {f.category.value}: {f.message} in {f.file_path}" for f in critical_findings]
+            decisions = self.policy_semantic.check_actions(descriptions)
+            if any(not allowed for allowed, _ in decisions):
+                reasons = [reason for allowed, reason in decisions if not allowed]
+                return {"error": f"Semantic policy violation: {'; '.join(reasons)}", "session_id": session.session_id}
 
         # Trust score
         session.trust_score = self.trust_calc.calculate(session.get_all_findings())
@@ -114,6 +128,8 @@ class OrchestratorAgent:
         # Report
         report_data = self.reporter.generate(session)
         report_markdown = self.reporter.to_markdown(session)
+
+        self.orchestrator_session = session
 
         result = {
             "session_id": session.session_id,

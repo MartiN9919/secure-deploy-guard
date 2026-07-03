@@ -57,9 +57,18 @@ Modern development—especially vibe coding and AI-assisted code generation—pr
 | **SAST** | `.py`, `.js`, `.c`, `.cpp`, `.cs`, `.java`, `.go`, `.rb` | SQL injection, XSS, command injection, hardcoded secrets, path traversal, SSRF, insecure deserialization, buffer overflow |
 | **SCA** | `requirements.txt` | Known CVEs in pinned dependencies; enriched with NVD, MITRE, and OSV data |
 | **Config** | `Dockerfile*`, `docker-compose*.yml`, `*.yaml`/`*.yml` (K8s) | Missing `USER`, missing `HEALTHCHECK`, `:latest` tag, secrets in `ENV`, privileged containers, missing resource limits, `runAsNonRoot` missing |
+| **Secrets** | All text files | Hardcoded AWS keys, API keys, passwords, tokens, SSH private keys, JWTs |
 | **Red Team** | `.py`, `.js`, `.html`, `.md`, `.txt`, `.yaml`, `.yml` | Instruction injection, hidden commands, zero-width characters |
 | **Blue Team** | Session-level metrics | Anomaly spikes, unexpected agent counts, unusual critical finding ratios |
 | **Green Team** | Critical / high findings | Auto-fix suggestions for SQLi, command injection, hardcoded secrets |
+
+Additional outputs:
+
+| Output | Description |
+|---|---|
+| **SBOM** | CycloneDX 1.5 JSON generated from `requirements.txt` |
+| **Exit codes** | `0` = passed, `1` = severity threshold exceeded, `2` = error |
+| **Ignore list** | Inline `# sdg-ignore: rule-id` comments or `.sdg-ignore` baseline file |
 
 ---
 
@@ -72,10 +81,11 @@ Modern development—especially vibe coding and AI-assisted code generation—pr
 | **SAST engines** | Bandit + built-in regex patterns |
 | **SCA engine** | `requirements.txt` parser + CVE Intelligence Gathering |
 | **Config scanner** | MCP Docker Scanner |
+| **Secrets scanner** | MCP Secret Detector |
 | **MCP transport** | MCP Python SDK 1.28+ over stdio |
 | **Policy engine** | YAML configuration + Python (`StructuralGate`, `SemanticGate`) |
 | **HITL** | CLI approval gate with UTF-8 / Cyrillic support |
-| **Reports** | JSON, Markdown, CLI table, web dashboard |
+| **Reports** | JSON, Markdown, CycloneDX SBOM, CLI table, web dashboard |
 | **Web UI** | FastAPI 0.138 + Starlette 1.3 + Jinja2 + Uvicorn 0.49 |
 | **HTTP client** | httpx |
 | **Testing** | pytest 9.1 |
@@ -99,17 +109,18 @@ Modern development—especially vibe coding and AI-assisted code generation—pr
        │        │        │        │        │        │
        ▼        ▼        ▼        ▼        ▼        ▼
    ┌──────┐ ┌──────┐ ┌──────┐ ┌───────┐ ┌───────┐ ┌─────────┐
-   │ SAST │ │ SCA  │ │Config│ │Structural│ │Semantic│ │ Blue   │
-   │Agent │ │Agent │ │Agent │ │ Gate   │ │ Gate   │ │ Team   │
-   └──┬───┘ └──┬───┘ └──┬───┘ └────┬────┘ └────┬────┘ └───┬────┘
-      │        │        │          │           │          │
-      ▼        ▼        ▼          │           │          ▼
-  Bandit    CVE      Docker       roles +      LLM      anomaly
-  MCP       API      MCP          env rules   check     detection
-  Semgrep
-  MCP
-      │        │        │          │           │
-      └────────┴────────┴──────────┴───────────┘
+    │ SAST │ │ SCA  │ │Config│ │Secrets│ │Structural│ │Semantic│ │ Blue   │
+    │Agent │ │Agent │ │Agent │ │Agent │ │ Gate   │ │ Gate   │ │ Team   │
+    └──┬───┘ └──┬───┘ └──┬───┘ └───┬───┘ └────┬────┘ └────┬────┘ └───┬────┘
+       │        │        │         │          │           │          │
+       ▼        ▼        ▼         ▼          │           │          ▼
+   Bandit    CVE      Docker   Secret      roles +      LLM      anomaly
+   MCP       API      MCP      MCP         env rules   check     detection
+   Semgrep
+   MCP
+       │        │        │         │          │           │
+       └────────┴────────┴─────────┴──────────┴───────────┘
+
                               │
                               ▼
                     ┌─────────────────────┐
@@ -135,12 +146,14 @@ Modern development—especially vibe coding and AI-assisted code generation—pr
 3. `SASTAgent` asynchronously calls the MCP Bandit server and the MCP Semgrep server.
 4. `SCAAgent` parses `requirements.txt`, compares versions against a known-vulnerability database, and enriches findings via `CVEIntelligenceGatherer`.
 5. `ConfigAgent` calls the MCP Docker Scanner for Dockerfile and docker-compose checks.
-6. `SemanticGate` sends critical findings to the LLM for semantic policy evaluation.
-7. `TrustScoreCalculator` computes a score from the collected findings.
-8. `BlueTeam` checks the session for anomalies.
-9. `ApprovalGate` requests human approval if the trust score is low, critical findings exist, or the policy requires it.
-10. `LLMJudge` evaluates scan quality on a 1-5 scale.
-11. `ReportGenerator` produces Markdown and JSON reports.
+6. `SecretsAgent` calls the MCP Secret Detector for hardcoded credentials.
+7. Ignore filtering is applied via inline `# sdg-ignore:` comments or a `.sdg-ignore` baseline file.
+8. `SemanticGate` sends critical findings to the LLM for semantic policy evaluation.
+9. `TrustScoreCalculator` computes a score from the collected findings.
+10. `BlueTeam` checks the session for anomalies.
+11. `ApprovalGate` requests human approval if the trust score is low, critical findings exist, or the policy requires it.
+12. `LLMJudge` evaluates scan quality on a 1-5 scale.
+13. `ReportGenerator` produces Markdown, JSON, and CycloneDX SBOM reports.
 
 ---
 
@@ -180,7 +193,16 @@ Performs software composition analysis:
 Checks infrastructure configurations by calling:
 - `MCPClient("sdg/mcp_servers/server_docker.py")` for Dockerfile and docker-compose scanning.
 
-### 5.5 LlmAgent
+### 5.5 SecretsAgent
+
+**File:** `sdg/agents/secrets_agent.py`
+
+Detects hardcoded secrets and credentials by calling:
+- `MCPClient("sdg/mcp_servers/server_secrets.py")` for secret pattern scanning.
+
+This agent is enabled by default in `config.yaml`.
+
+### 5.6 LlmAgent
 
 **File:** `sdg/adk/llm_agent.py`
 
@@ -199,7 +221,7 @@ Sends a summary of findings to the LLM and asks for a structured evaluation:
 
 **File:** `sdg/policy_engine/semantic.py`
 
-Sends descriptions of critical findings to the LLM and asks whether they violate security policies (PII, destructive operations, etc.). Operates fail-closed: if the LLM call fails, the action is blocked.
+Sends descriptions of critical findings to the LLM and asks whether they violate security policies (PII, destructive operations, etc.). Operates fail-closed: if the LLM call fails, the action is blocked. Uses batching to reduce the number of LLM calls when multiple critical findings exist.
 
 ### 5.8 Red, Blue, and Green Teams
 
@@ -255,7 +277,7 @@ Fast binary checks based on role and environment:
 
 **File:** `sdg/policy_engine/semantic.py`
 
-LLM-based check that evaluates the intent and content of critical findings for PII, destructive operations, or policy violations.
+LLM-based check that evaluates the intent and content of critical findings for PII, destructive operations, or policy violations. Uses `batch_query_llm` from `sdg/utils/llm.py` to group multiple findings into one LLM call.
 
 ### Supporting Modules
 
@@ -266,7 +288,7 @@ LLM-based check that evaluates the intent and content of critical findings for P
 
 ---
 
-## 8. Trust Score, Judge, and Reports
+## 8. Trust Score, Judge, Reports, and SBOM
 
 ### Trust Score
 
@@ -285,7 +307,7 @@ A scan passes only if `trust_score >= 0.5` and there are no critical findings.
 
 ### LLM Judge
 
-See [LLMJudge](#57-llmjudge).
+See [LLMJudge](#56-llmjudge).
 
 ### Reports
 
@@ -295,7 +317,19 @@ Generated outputs:
 - CLI table
 - JSON (`--format json`)
 - Markdown (`sdg-report.md` or `--output path`)
+- CycloneDX 1.5 SBOM JSON (`--sbom`)
 - Web dashboard rendered in `sdg/frontend/`
+
+### SBOM Generation
+
+SDG can generate a CycloneDX 1.5 JSON SBOM from `requirements.txt`:
+
+```bash
+.venv/bin/python -m sdg.cli scan . --sbom
+.venv/bin/python -m sdg.cli scan . --sbom --sbom-output bom.json
+```
+
+The SBOM is saved to `sdg-sbom.json` by default or to the path specified by `--sbom-output`.
 
 ---
 
@@ -357,7 +391,7 @@ OPENROUTER_MODEL=google/gemini-2.5-flash-lite-preview-09-2025
 ### 10.1 CLI
 
 ```bash
-# Basic scan: SAST + SCA + Config
+# Basic scan: SAST + SCA + Config + Secrets
 .venv/bin/python -m sdg.cli scan ./my-project --auto-approve
 
 # Full pipeline: scan + Red Team + Green Team fixes
@@ -372,6 +406,13 @@ OPENROUTER_MODEL=google/gemini-2.5-flash-lite-preview-09-2025
 # Save Markdown report
 .venv/bin/python -m sdg.cli scan . --output report.md
 
+# Generate CycloneDX SBOM
+.venv/bin/python -m sdg.cli scan . --sbom --sbom-output bom.json
+
+# CI/CD gating: fail on critical or high findings
+.venv/bin/python -m sdg.cli scan . --auto-approve --fail-on critical
+.venv/bin/python -m sdg.cli scan . --auto-approve --fail-on high
+
 # Red Team scan only
 .venv/bin/python -m sdg.cli red-team ./my-project
 
@@ -381,6 +422,40 @@ OPENROUTER_MODEL=google/gemini-2.5-flash-lite-preview-09-2025
 # CVE lookup
 .venv/bin/python -m sdg.cve_intelligence.cli CVE-2023-46695
 ```
+
+### Exit Codes
+
+| Exit Code | Meaning |
+|---|---|
+| `0` | Scan passed (no findings at or above `--fail-on` severity) |
+| `1` | Findings at or above `--fail-on` severity were detected |
+| `2` | Scan error (blocked by policy, anomaly, HITL denied, etc.) |
+
+### Suppressing False Positives
+
+#### Inline suppression
+
+Add a comment on the same line as the finding:
+
+```python
+password = "test123"  # sdg-ignore: hardcoded_secret
+api_key = "abc"       # sdg-ignore: hardcoded_secret,api_key
+```
+
+Use `# sdg-ignore: *` to suppress all rules on that line.
+
+#### Baseline file
+
+Create `.sdg-ignore` in the project root with a JSON list of finding fingerprints:
+
+```json
+[
+  "a1b2c3d4e5f67890",
+  "0987654321fedcba"
+]
+```
+
+Fingerprints are generated from file path, line number, category, and snippet. The path is configurable via `ignore_baseline_path` in `config.yaml`.
 
 ### 10.2 Web Dashboard
 
@@ -482,8 +557,9 @@ __pycache__
 *.pyc
 *.pyo
 *.pyd
-.swg-report.md
+sdg-report.md
 report.md
+sdg-sbom.json
 ```
 
 ### 11.3 Building and Running
@@ -531,11 +607,12 @@ jobs:
         run: docker build -t sdg .
       - name: Run SDG scan
         run: |
-          docker run --rm \
-            -e OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }} \
-            -v "$(pwd):/workspace:ro" \
-            sdg \
-            python -m sdg.cli scan /workspace --auto-approve --full
+           docker run --rm \
+             -e OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }} \
+             -v "$(pwd):/workspace:ro" \
+             sdg \
+             python -m sdg.cli scan /workspace --auto-approve --full --fail-on critical
+
 ```
 
 ---
@@ -587,7 +664,8 @@ pip install -r requirements.txt
 │   │   ├── base.py                     # BaseAgent abstract class
 │   │   ├── sast_agent.py               # SAST via MCP Bandit + Semgrep
 │   │   ├── sca_agent.py                # SCA + CVE intelligence
-│   │   └── config_agent.py             # Config via MCP Docker
+│   │   ├── config_agent.py             # Config via MCP Docker
+│   │   └── secrets_agent.py            # Secrets via MCP Secret Detector
 │   ├── cve_intelligence/               # CVE enrichment (NVD, MITRE, OSV)
 │   │   ├── models.py
 │   │   ├── sources.py
@@ -629,7 +707,8 @@ pip install -r requirements.txt
 │   ├── sandbox/
 │   │   └── executor.py                 # Subprocess sandbox
 │   ├── utils/
-│   │   ├── llm.py                      # OpenRouter LLM client
+│   │   ├── llm.py                      # OpenRouter LLM client + rate limiter
+│   │   ├── ignore_manager.py           # False positive suppression
 │   │   └── patterns.py                 # Regex SAST patterns
 │   ├── config.py                       # Configuration loader
 │   ├── config.yaml                     # Default policies and settings
@@ -696,6 +775,7 @@ scanning:
     - sast
     - sca
     - config
+    - secrets
   severity_threshold: medium
   fail_on: critical
   excluded_dirs:
@@ -710,9 +790,27 @@ scanning:
   excluded_file_patterns:
     - "*.min.js"
     - "*.min.css"
+
+llm_rate_limit_calls_per_minute: 30
+llm_rate_limit_calls_per_scan: 10
+ignore_baseline_path: .sdg-ignore
 ```
 
 You can override settings by editing `sdg/config.yaml` or by passing a custom path to `load_config()`.
+
+### LLM Rate Limiting and Cost Controls
+
+SDG includes a token-bucket rate limiter and a per-scan budget for LLM calls. Configure in `config.yaml`:
+
+```yaml
+llm_rate_limit_calls_per_minute: 30
+llm_rate_limit_calls_per_scan: 10
+```
+
+- `llm_rate_limit_calls_per_minute` limits calls to the OpenRouter API within a 60-second window.
+- `llm_rate_limit_calls_per_scan` caps the total number of LLM calls for a single scan.
+
+If the limit is exceeded, the SemanticGate and LLMJudge gracefully skip with a message instead of crashing the scan.
 
 ---
 
@@ -729,6 +827,10 @@ source .venv/bin/activate
 ### `Judge Score: 3 / judge skipped: no API key`
 
 Create `.env` with a valid `OPENROUTER_API_KEY`.
+
+### `LLM query skipped: rate limit or scan budget exceeded`
+
+Increase the limits in `config.yaml` or reduce the number of findings by fixing critical/high issues.
 
 ### Bandit not found inside MCP server
 
